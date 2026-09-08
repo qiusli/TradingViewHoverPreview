@@ -1,0 +1,54 @@
+#tvhp-preview {
+  position: fixed;
+  z-index: 2147483647;
+  width: 520px;
+  height: 330px;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #363a45;
+  border-radius: 10px;
+  background: #101114;
+  color: #d1d4dc;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#tvhp-preview[hidden] { display: none; }
+
+.tvhp-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  height: 22px;
+  font-weight: 600;
+}
+
+.tvhp-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin-top: -4px;
+  border-radius: 6px;
+  background: #1e222d;
+}
+
+.tvhp-tabs button {
+  padding: 2px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #787b86;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.tvhp-tabs button[aria-selected="true"] {
+  background: #2962ff;
+  color: #fff;
+}
+
+.tvhp-muted { color: #787b86; font-weight: 400; }
+.tvhp-error, .tvhp-loading { padding: 115px 8px; text-align: center; color: #b2b5be; }
+#tvhp-preview svg { display: block; width: 496px; height: 280px; }

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "TradingView Ticker Hover Preview",
+  "version": "0.3.4",
+  "description": "Shows compact daily and weekly candlestick charts with EMA 9, 20, 50, and 200 when hovering over Pine Screener tickers.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://query1.finance.yahoo.com/*",
+    "https://query2.finance.yahoo.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.tradingview.com/pine-screener/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
