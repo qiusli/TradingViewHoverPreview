@@ -1,6 +1,6 @@
 # TradingView Hover Preview
 
-Build a browser extension that displays a compact daily candlestick chart when hovering over a ticker in TradingView Pine Screener.
+Build a browser extension that displays a compact daily or weekly candlestick chart when hovering over a ticker across TradingView, including Pine Screener and chart watchlists.
 
 ## Agreed requirements
 
@@ -15,4 +15,4 @@ Build a browser extension that displays a compact daily candlestick chart when h
 
 ## Status
 
-The initial Chrome extension prototype is implemented. It draws the preview directly and retrieves two years of daily history through Yahoo Finance so EMA 200 has sufficient warm-up data.
+The Chrome extension is implemented across TradingView pages. It recognizes symbol links and chart-watchlist rows, with separate daily and weekly data for EMA warm-up.
