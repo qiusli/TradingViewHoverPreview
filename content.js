@@ -1,5 +1,7 @@
 const HOVER_DELAY_MS = 350;
 const VISIBLE_BARS = 100;
+const NEWS_REQUEST_CACHE_TTL_MS = 90 * 60 * 1000;
+const TREND_REQUEST_CACHE_TTL_MS = 15 * 60 * 1000;
 const KNOWN_LEVERAGED_SINGLE_STOCK_ETFS = new Set([
   "AAPD", "AAPU", "AMDD", "AMDL", "AMDS", "AMZU", "AMZD", "CONI", "CONL",
   "GGLL", "GGLS", "METD", "METU", "MSFD", "MSFU", "MSTU", "MSTZ", "NVDD",
@@ -127,6 +129,15 @@ function isInvalidExtensionContext(error) {
 }
 
 function findHoverTarget(element) {
+  if (location.hostname === "seekingalpha.com" && location.pathname.startsWith("/screeners/")) {
+    const tickerLink = element.closest?.('[data-test-id="top-rated-ticker-link"][href*="/symbol/"]');
+    return tickerLink && parseSymbol(tickerLink) ? tickerLink : null;
+  }
+
+  // Keep the hover chart exclusive to Pine Screener. The content script still
+  // runs on chart pages so the toolbar-triggered watchlist news modal works.
+  if (!location.pathname.startsWith("/pine-screener")) return null;
+
   const symbolRow = element.closest?.("[data-symbol-full]");
   if (symbolRow && parseSymbol(symbolRow)) return symbolRow;
 
@@ -140,7 +151,15 @@ function parseSymbol(element) {
   if (attributeMatch) return symbolIdentity(attributeMatch[1], attributeMatch[2]);
 
   if (!element.href) return null;
-  const match = new URL(element.href).pathname.match(/\/symbols\/([A-Z0-9_]+)-([A-Z0-9.\-]+)\/?/i);
+  const url = new URL(element.href, location.href);
+  if (url.hostname === "seekingalpha.com") {
+    const seekingAlphaMatch = url.pathname.match(/^\/symbol\/([A-Z0-9.\-]+)\/?$/i);
+    if (!seekingAlphaMatch) return null;
+    const ticker = seekingAlphaMatch[1].toUpperCase();
+    return { label: ticker, yahoo: ticker.replaceAll(".", "-") };
+  }
+
+  const match = url.pathname.match(/\/symbols\/([A-Z0-9_]+)-([A-Z0-9.\-]+)\/?/i);
   if (!match) return null;
   return symbolIdentity(match[1], match[2]);
 }
@@ -305,8 +324,6 @@ async function toggleNewsModal() {
   }
 
   newsModalHost = document.createElement("div");
-  tickerNewsRequests.clear();
-  tickerTrendRequests.clear();
   todayNewsFingerprints.clear();
   newsModalHost.id = "tvhp-news-host";
   document.documentElement.appendChild(newsModalHost);
@@ -407,21 +424,21 @@ async function loadTickerNews(section, symbol) {
 }
 
 function requestTickerNews(symbol) {
-  if (!tickerNewsRequests.has(symbol)) {
-    const request = sendExtensionRequest({ type: "load-ticker-rss-news", symbol }, 20000)
-      .catch((error) => ({ ok: false, error: error.message }));
-    tickerNewsRequests.set(symbol, request);
-  }
-  return tickerNewsRequests.get(symbol);
+  const cached = tickerNewsRequests.get(symbol);
+  if (cached && Date.now() - cached.savedAt < NEWS_REQUEST_CACHE_TTL_MS) return cached.request;
+  const request = sendExtensionRequest({ type: "load-ticker-rss-news", symbol }, 20000)
+    .catch((error) => ({ ok: false, error: error.message }));
+  tickerNewsRequests.set(symbol, { savedAt: Date.now(), request });
+  return request;
 }
 
 function requestTickerTrend(symbol) {
-  if (!tickerTrendRequests.has(symbol)) {
-    const request = sendExtensionRequest({ type: "load-ticker-trend", symbol }, 20000)
-      .catch((error) => ({ ok: false, error: error.message }));
-    tickerTrendRequests.set(symbol, request);
-  }
-  return tickerTrendRequests.get(symbol);
+  const cached = tickerTrendRequests.get(symbol);
+  if (cached && Date.now() - cached.savedAt < TREND_REQUEST_CACHE_TTL_MS) return cached.request;
+  const request = sendExtensionRequest({ type: "load-ticker-trend", symbol }, 20000)
+    .catch((error) => ({ ok: false, error: error.message }));
+  tickerTrendRequests.set(symbol, { savedAt: Date.now(), request });
+  return request;
 }
 
 async function preloadTickerCounts(main) {

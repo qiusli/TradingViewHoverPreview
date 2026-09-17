@@ -1,6 +1,6 @@
 # TradingView Hover Preview
 
-Build a browser extension that displays a compact daily or weekly candlestick chart when hovering over a ticker across TradingView, including Pine Screener and chart watchlists.
+Build a browser extension that displays a compact daily or weekly candlestick chart when hovering over a ticker in TradingView Pine Screener or Seeking Alpha screeners, plus a toolbar-triggered watchlist news modal on TradingView chart pages.
 
 ## Agreed requirements
 
@@ -15,4 +15,4 @@ Build a browser extension that displays a compact daily or weekly candlestick ch
 
 ## Status
 
-The Chrome extension is implemented across TradingView pages. It recognizes symbol links and chart-watchlist rows, with separate daily and weekly data for EMA warm-up.
+The Chrome extension runs across TradingView pages for its news modal. Hover-chart previews are limited to TradingView Pine Screener and Seeking Alpha screener tables. Day and Week previews use separate data for EMA warm-up.

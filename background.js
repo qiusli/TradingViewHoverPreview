@@ -1,7 +1,13 @@
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const CACHE_RECOVERY_LIMIT = 20;
-const NEWS_CACHE_TTL_MS = 30 * 60 * 1000;
+const NEWS_CACHE_TTL_MS = 90 * 60 * 1000;
+const NEWS_CACHE_RECOVERY_LIMIT = 80;
 const memoryCache = new Map();
+const KNOWN_COMPANY_ALIASES = {
+  GME: ["GameStop"],
+  SE: ["Sea Limited"],
+  SPCX: ["SpaceX", "Space Exploration Technologies"]
+};
 
 // Remove the obsolete credential now that news uses public RSS feeds only.
 chrome.storage.local.remove("massiveApiKey").catch(() => {});
@@ -42,17 +48,37 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 async function loadTickerRssNews(rawSymbol) {
   const symbol = normalizeNewsSymbol(rawSymbol);
   if (!symbol) throw new Error("Invalid ticker");
-  const cacheKey = `rss:v10:${symbol}`;
+  const cacheKey = `rss:v15:${symbol}`;
   const cached = memoryCache.get(cacheKey);
   if (cached && Date.now() - cached.savedAt < NEWS_CACHE_TTL_MS) return cached.value;
 
-  const aliases = await fetchCompanyAliases(symbol);
-  const companyQuery = aliases[0] ? `"${aliases[0]}" OR "$${symbol}" OR "${symbol} stock"` : `"$${symbol}" OR "${symbol} stock"`;
+  const storageKey = `news:${cacheKey}`;
+  const stored = (await chrome.storage.local.get(storageKey))[storageKey];
+  if (stored?.value && Date.now() - stored.savedAt < NEWS_CACHE_TTL_MS) {
+    memoryCache.set(cacheKey, stored);
+    return stored.value;
+  }
+
+  const aliases = (await fetchCompanyAliases(symbol)).filter(isStrongCompanyAlias);
+  const aliasQuery = aliases.slice(0, 3).map((alias) => `"${alias}"`).join(" OR ");
+  const companyQuery = aliasQuery
+    ? symbol.length <= 2
+      ? aliasQuery
+      : `${aliasQuery} OR "$${symbol}" OR "${symbol} stock"`
+    : `"$${symbol}" OR "${symbol} stock"`;
   const query = `(${companyQuery}) (site:marketwatch.com OR site:finance.yahoo.com OR site:cnbc.com OR site:bloomberg.com OR site:reuters.com OR site:apnews.com OR site:businesswire.com OR site:globenewswire.com OR site:prnewswire.com OR site:benzinga.com) -site:finance.yahoo.com/quote -site:finance.yahoo.com/research/reports -site:marketwatch.com/investing/stock -site:cnbc.com/video when:7d`;
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
-  const articles = (await fetchRssFeed(url))
+  const [yahooResult, marketWatchResult, rssResult] = await Promise.allSettled([
+    fetchYahooTickerNews(symbol, aliases),
+    fetchMarketWatchTickerNews(symbol, aliases),
+    fetchRssFeed(url)
+  ]);
+  const yahooArticles = yahooResult.status === "fulfilled" ? yahooResult.value : [];
+  const marketWatchArticles = marketWatchResult.status === "fulfilled" ? marketWatchResult.value : [];
+  const rssArticles = (rssResult.status === "fulfilled" ? rssResult.value : [])
     .filter((article) => isLikelyEnglish(article) && isWithinPastWeek(article.publishedAt) && isRelevantRssArticle(article, symbol, aliases))
-    .map((article) => ({ ...article, tickers: [symbol], score: 0, reason: "Company news" }));
+    .map((article) => ({ ...article, tickers: [symbol], score: 0, reason: "Company news", sourcePriority: 1 }));
+  const articles = [...yahooArticles, ...marketWatchArticles, ...rssArticles];
   const seen = new Set();
   const unique = articles.filter((article) => {
     const key = article.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -61,35 +87,208 @@ async function loadTickerRssNews(rawSymbol) {
     return true;
   }).sort((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
   const value = { articles: unique, fetchedAt: Date.now() };
-  memoryCache.set(cacheKey, { savedAt: Date.now(), value });
+  const cacheEntry = { savedAt: Date.now(), value };
+  memoryCache.set(cacheKey, cacheEntry);
+  await persistNewsCache(storageKey, cacheEntry);
   return value;
+}
+
+async function persistNewsCache(storageKey, cacheEntry) {
+  try {
+    await chrome.storage.local.set({ [storageKey]: cacheEntry });
+  } catch (_error) {
+    try {
+      const stored = await chrome.storage.local.get(null);
+      const entries = Object.entries(stored)
+        .filter(([key]) => key.startsWith("news:rss:") && key !== storageKey)
+        .sort(([, a], [, b]) => (b?.savedAt || 0) - (a?.savedAt || 0));
+      const keysToRemove = entries
+        .slice(NEWS_CACHE_RECOVERY_LIMIT - 1)
+        .map(([key]) => key);
+      if (keysToRemove.length) await chrome.storage.local.remove(keysToRemove);
+      await chrome.storage.local.set({ [storageKey]: cacheEntry });
+    } catch (_cacheRecoveryError) {
+      // The in-memory cache still serves the current service-worker session.
+    }
+  }
+}
+
+async function fetchMarketWatchTickerNews(symbol, aliases) {
+  const query = `"${symbol}" site:marketwatch.com -site:marketwatch.com/investing/stock -site:marketwatch.com/investing/fund -site:marketwatch.com/investing/index -site:marketwatch.com/investing/future when:7d`;
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+  const candidates = (await fetchRssFeed(url))
+    .filter((article) => String(article.publisher || "").toLowerCase().includes("marketwatch"))
+    .filter((article) => isLikelyEnglish(article) && isWithinPastWeek(article.publishedAt) && isRelevantRssArticle(article, symbol, aliases));
+  return (await Promise.all(candidates.map(async (article) => ({
+    ...article,
+    url: await resolveGoogleNewsUrl(article.url),
+    tickers: [symbol],
+    score: 0,
+    reason: "Company news",
+    sourcePriority: 0
+  })))).filter((article) => isDirectTextArticleUrl(article.url));
+}
+
+async function resolveGoogleNewsUrl(value) {
+  try {
+    const sourceUrl = new URL(value);
+    if (sourceUrl.hostname !== "news.google.com") return sourceUrl.href;
+    const articleId = sourceUrl.pathname.split("/").filter(Boolean).at(-1);
+    if (!articleId) return "";
+    const pageResponse = await fetch(`https://news.google.com/rss/articles/${encodeURIComponent(articleId)}?hl=en-US&gl=US&ceid=US:en`, { signal: AbortSignal.timeout(10000) });
+    if (!pageResponse.ok) return "";
+    const page = await pageResponse.text();
+    const signature = page.match(/data-n-a-sg=["']([^"']+)["']/i)?.[1];
+    const timestamp = page.match(/data-n-a-ts=["']([^"']+)["']/i)?.[1];
+    const embeddedId = page.match(/data-n-a-id=["']([^"']+)["']/i)?.[1] || articleId;
+    if (!signature || !timestamp) return "";
+    const request = ["garturlreq", [["X", "X", ["X", "X"], null, null, 1, 1, "US:en", null, 1, null, null, null, null, null, 0, 1], "X", "X", 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0], embeddedId, Number(timestamp), signature];
+    const body = new URLSearchParams({ "f.req": JSON.stringify([[["Fbv4je", JSON.stringify(request), null, "generic"]]]) });
+    const decodeResponse = await fetch("https://news.google.com/_/DotsSplashUi/data/batchexecute", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body,
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!decodeResponse.ok) return "";
+    const rows = JSON.parse((await decodeResponse.text()).replace(/^\)\]\}'\s*/, ""));
+    const encoded = rows.find((row) => row?.[0] === "wrb.fr" && row?.[1] === "Fbv4je")?.[2];
+    const resolved = encoded ? JSON.parse(encoded)?.[1] : "";
+    return normalizeYahooArticleUrl(resolved);
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function fetchYahooTickerNews(symbol, aliases) {
+  const response = await fetch(`https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/news/`, {
+    headers: { "Accept-Language": "en-US,en;q=0.9" },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!response.ok) throw new Error(`Yahoo ticker news failed: HTTP ${response.status}`);
+  const html = await response.text();
+  if (!/<html[^>]+lang=["']en-US["']/i.test(html)) return [];
+  const escapedSymbol = escapeRegExp(symbol);
+  return html.split(/<li\s+class=["'][^"']*stream-item\s+story-item[^"']*["'][^>]*>/i).slice(1).flatMap((block, index) => {
+    const card = block.split(/<\/li>/i, 1)[0];
+    const taggedForSymbol = new RegExp(`(?:aria-label=["']${escapedSymbol}["']|href=["'][^"']*\/quote\/(?:${escapedSymbol}|${encodeURIComponent(symbol)})\/?)`, "i").test(card);
+    if (!taggedForSymbol) return [];
+    const headlineLink = card.match(/<a\b[^>]*class=["'][^"']*\btitles\b[^"']*["'][^>]*>/i)?.[0] || "";
+    const href = decodeXml(headlineLink.match(/\bhref=["']([^"']+)["']/i)?.[1] || "");
+    const title = decodeXml(headlineLink.match(/\btitle=["']([^"']+)["']/i)?.[1]
+      || headlineLink.match(/\baria-label=["']([^"']+)["']/i)?.[1]
+      || "");
+    const publishing = card.match(/<div\b[^>]*class=["'][^"']*\bpublishing\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] || "";
+    const footer = decodeXml(publishing.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+    const [publisher = "Yahoo Finance", relativeTime = ""] = footer.split(/\s*[•·]\s*/, 2);
+    const url = normalizeYahooArticleUrl(href);
+    const publishedAt = parseRelativeNewsTime(relativeTime);
+    const article = { id: `yahoo-${index}-${url}`, title, description: "", url, publisher: publisher.trim(), publishedAt, tickers: [symbol], score: 0, reason: "Ticker news", sourcePriority: 0 };
+    return url
+      && title
+      && isAllowedPublisher(article.publisher)
+      && isLikelyEnglish(article)
+      && isWithinPastWeek(publishedAt)
+      && isNewsArticleTitle(title)
+      && isDirectTextArticleUrl(url)
+      && isRelevantRssArticle(article, symbol, aliases)
+      ? [article]
+      : [];
+  });
+}
+
+function normalizeYahooArticleUrl(value) {
+  try {
+    return new URL(value, "https://finance.yahoo.com").href;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function parseRelativeNewsTime(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const match = text.match(/^(\d+)\s*(m|min|h|hr|d|day)s?\s+ago$/);
+  if (match) {
+    const amount = Number(match[1]);
+    const unitMs = match[2].startsWith("m") ? 60000 : match[2].startsWith("h") ? 3600000 : 86400000;
+    return new Date(Date.now() - amount * unitMs).toISOString();
+  }
+  if (text === "yesterday") return new Date(Date.now() - 86400000).toISOString();
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : "";
+}
+
+function isDirectTextArticleUrl(value) {
+  try {
+    const url = new URL(value);
+    const path = url.pathname.toLowerCase();
+    if (/\/(?:video|videos|live)(?:\/|$)/.test(path)) return false;
+    if (/\/(?:quote|research\/reports)(?:\/|$)/.test(path)) return false;
+    if (url.hostname.endsWith("marketwatch.com") && /\/investing\/(?:stock|fund|future|index)\//.test(path)) return false;
+    if (url.hostname === "finance.yahoo.com") return /\/(?:m\/[^/]+\/[^/]+\.html|(?:[^/]+\/)*articles\/[^/]+\.html|news\/[^/]+\.html)/.test(path);
+    return /\/(?:story|article|articles|news)\//.test(path) || /-[a-f0-9]{8,}(?:\/|$)/.test(path);
+  } catch (_error) {
+    return false;
+  }
 }
 
 async function fetchCompanyAliases(symbol) {
   const cacheKey = `company:${symbol}`;
   const cached = memoryCache.get(cacheKey);
   if (cached) return cached;
-  try {
-    const response = await fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&quotesCount=8&newsCount=0`, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const match = (payload.quotes || []).find((quote) => normalizeNewsSymbol(quote.symbol) === symbol);
-    const aliases = [...new Set([match?.longname, match?.shortname, match?.displayName]
-      .map(cleanCompanyName)
-      .filter(Boolean))];
-    memoryCache.set(cacheKey, aliases);
-    return aliases;
-  } catch (_error) {
-    return [];
+  const storageKey = `companyAliases:${symbol}`;
+  const stored = (await chrome.storage.local.get(storageKey))[storageKey];
+  const names = [...(KNOWN_COMPANY_ALIASES[symbol] || []), ...(stored?.aliases || [])];
+
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    try {
+      const response = await fetch(`https://${host}/v1/finance/search?q=${encodeURIComponent(symbol)}&quotesCount=8&newsCount=0`, { signal: AbortSignal.timeout(10000) });
+      if (!response.ok) continue;
+      const payload = await response.json();
+      const match = (payload.quotes || []).find((quote) => normalizeNewsSymbol(quote.symbol) === symbol);
+      names.push(match?.longname, match?.shortname, match?.displayName);
+      if (match) break;
+    } catch (_error) {
+      // Try the other Yahoo host, then chart metadata below.
+    }
   }
+
+  if (!names.some(Boolean)) {
+    for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+      try {
+        const response = await fetch(`https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) continue;
+        const meta = (await response.json())?.chart?.result?.[0]?.meta;
+        names.push(meta?.longName, meta?.shortName);
+        if (meta) break;
+      } catch (_error) {
+        // Keep any persistent or known aliases already collected.
+      }
+    }
+  }
+
+  const aliases = [...new Set(names.map(cleanCompanyName).filter(Boolean))];
+  memoryCache.set(cacheKey, aliases);
+  if (aliases.length) chrome.storage.local.set({ [storageKey]: { aliases, savedAt: Date.now() } }).catch(() => {});
+  return aliases;
 }
 
 function cleanCompanyName(value) {
-  return String(value || "")
+  const original = String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/[,.]+$/g, "")
+    .trim();
+  const cleaned = original
     .replace(/\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?)\b\.?/gi, "")
     .replace(/\s+/g, " ")
     .replace(/[,.]+$/g, "")
     .trim();
+  return cleaned.length <= 3 ? original : cleaned;
+}
+
+function isStrongCompanyAlias(alias) {
+  const normalized = String(alias || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return normalized.length >= 4 || normalized.includes(" ");
 }
 
 function isWithinPastWeek(value) {

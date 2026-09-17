@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "TradingView Ticker Hover Preview",
-  "version": "0.12.6",
-  "description": "Shows TradingView ticker hover charts and ranks the past week's active-watchlist news.",
+  "version": "0.14.0",
+  "description": "Shows ticker hover charts on TradingView Pine Screener and Seeking Alpha screeners, plus TradingView watchlist news.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "https://query1.finance.yahoo.com/*",
     "https://query2.finance.yahoo.com/*",
+    "https://finance.yahoo.com/*",
+    "https://www.marketwatch.com/*",
     "https://news.google.com/*"
   ],
   "icons": {
@@ -27,7 +29,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.tradingview.com/*"],
+      "matches": [
+        "https://www.tradingview.com/*",
+        "https://seekingalpha.com/screeners/*"
+      ],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"

@@ -1,6 +1,6 @@
 # TradingView Ticker Hover Preview
 
-A Chrome extension for TradingView. Hover a ticker in Pine Screener, chart watchlists, or other symbol links to see a compact daily or weekly candlestick chart with:
+A Chrome extension for TradingView and Seeking Alpha. Hover a ticker in TradingView Pine Screener or a Seeking Alpha screener table to see a compact daily or weekly candlestick chart with:
 
 - EMA 9: solid green
 - EMA 20: solid red
@@ -15,7 +15,7 @@ Click the extension toolbar icon on TradingView to open a centered news modal. I
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
 4. Select this project folder.
-5. Reload any open TradingView pages.
+5. Reload any open TradingView and Seeking Alpha screener pages.
 
 Use the **Day** and **Week** tabs in the preview to change timeframes. The extension fetches two years of daily data or ten years of weekly data so longer weekly EMAs can be shown when the symbol has enough history. Results are cached for 15 minutes, including across extension service-worker restarts. If Chrome's storage limit is reached, older chart entries are removed automatically and the current preview still renders. Common Canadian, UK, Australian, Hong Kong, Japanese, and Indian exchange symbols are translated to Yahoo Finance notation. Other symbol coverage and availability depend on Yahoo Finance.
 
